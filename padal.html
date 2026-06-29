@@ -1,0 +1,314 @@
+﻿<?php
+session_start();
+
+/*
+  OrganizerReports.php
+  - English-only UI
+  - Shows all reports
+  - Organizer/admin can mark reports as: in_review, resolved, banned
+*/
+
+/* ---------- CONFIG ---------- */
+$db_host = "localhost";
+$db_user = "root";
+$db_pass = "";
+$db_name = "squidpro";
+
+/* ---------- HELPERS ---------- */
+function esc($s) { return htmlspecialchars($s ?? '', ENT_QUOTES, 'UTF-8'); }
+
+/* ---------- AUTH CHECK ---------- */
+if (!isset($_SESSION['user_id']) || !in_array($_SESSION['role'], ['organizer','admin'])) {
+    header("Location: login.php");
+    exit;
+}
+
+/* ---------- CSRF TOKEN ---------- */
+if (empty($_SESSION['csrf_token'])) {
+    $_SESSION['csrf_token'] = bin2hex(random_bytes(24));
+}
+
+/* ---------- DB CONNECTION ---------- */
+$mysqli = new mysqli($db_host, $db_user, $db_pass, $db_name);
+if ($mysqli->connect_errno) {
+    die("Database connection failed.");
+}
+$mysqli->set_charset("utf8mb4");
+
+/* ---------- Ensure reply columns exist (safe to run) ---------- */
+$colCheck = $mysqli->query("
+    SELECT COLUMN_NAME
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'reports'
+");
+$cols = [];
+if ($colCheck) {
+    while ($r = $colCheck->fetch_assoc()) {
+        $cols[$r['COLUMN_NAME']] = true;
+    }
+}
+if (!isset($cols['response_text'])) {
+    $mysqli->query("ALTER TABLE reports ADD COLUMN response_text TEXT DEFAULT NULL");
+}
+if (!isset($cols['responded_at'])) {
+    $mysqli->query("ALTER TABLE reports ADD COLUMN responded_at DATETIME DEFAULT NULL");
+}
+if (!isset($cols['responded_by'])) {
+    $mysqli->query("ALTER TABLE reports ADD COLUMN responded_by INT DEFAULT NULL");
+}
+
+/* ---------- HANDLE ACTIONS ---------- */
+$success = "";
+$errors = [];
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? '';
+    $report_id = (int) ($_POST['report_id'] ?? 0);
+    $token = $_POST['csrf_token'] ?? '';
+
+    if (!hash_equals($_SESSION['csrf_token'], $token)) {
+        $errors[] = "Invalid CSRF token.";
+    } elseif ($report_id <= 0) {
+        $errors[] = "Invalid report ID.";
+    } else {
+        if ($action === "reply") {
+            $reply_text = trim($_POST['response_text'] ?? '');
+            $new_status = $_POST['status'] ?? 'in_review';
+            if ($reply_text === '') {
+                $errors[] = "Reply text is required.";
+            } else {
+                $stmt = $mysqli->prepare("
+                    UPDATE reports
+                    SET response_text = ?, responded_at = NOW(), responded_by = ?, status = ?
+                    WHERE id = ?
+                ");
+                $organizer_id = (int) ($_SESSION['user_id'] ?? 0);
+                $stmt->bind_param("sisi", $reply_text, $organizer_id, $new_status, $report_id);
+                $stmt->execute();
+                $stmt->close();
+                $success = "Reply sent to the report.";
+            }
+        }
+        if ($action === "review") {
+            $stmt = $mysqli->prepare("UPDATE reports SET status = 'in_review' WHERE id = ?");
+            $stmt->bind_param("i", $report_id);
+            $stmt->execute();
+            $stmt->close();
+            $success = "Report marked as In Review.";
+        }
+        elseif ($action === "resolve") {
+            $stmt = $mysqli->prepare("UPDATE reports SET status = 'resolved' WHERE id = ?");
+            $stmt->bind_param("i", $report_id);
+            $stmt->execute();
+            $stmt->close();
+            $success = "Report resolved.";
+        }
+        elseif ($action === "ban") {
+            // Mark report as banned
+            $stmt = $mysqli->prepare("UPDATE reports SET status = 'banned' WHERE id = ?");
+            $stmt->bind_param("i", $report_id);
+            $stmt->execute();
+            $stmt->close();
+
+            $success = "User banned and report updated.";
+        }
+    }
+}
+
+/* ---------- FETCH ALL REPORTS ---------- */
+$reports = [];
+$q = $mysqli->query("
+    SELECT r.id, r.issue_type, r.description, r.status, r.created_at,
+           r.response_text, r.responded_at,
+           u1.display_name AS reporter,
+           u2.display_name AS reported_user
+    FROM reports r
+    LEFT JOIN users u1 ON u1.id = r.reporter_id
+    LEFT JOIN users u2 ON u2.id = r.reported_user_id
+    ORDER BY r.created_at DESC
+");
+if ($q) {
+    while ($row = $q->fetch_assoc()) {
+        $reports[] = $row;
+    }
+}
+
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>squid pro | Review Reports</title>
+
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;800&display=swap" rel="stylesheet">
+
+<style>
+    body {
+        margin:0;
+        font-family:'Poppins',sans-serif;
+        background:#0d1117;
+        color:white;
+    }
+
+    .bg-waves {
+        position:fixed; inset:0; z-index:-3;
+        background:radial-gradient(circle at 20% 20%,#1a237e,transparent 60%),
+                   radial-gradient(circle at 80% 80%,#8e24aa,transparent 60%),
+                   radial-gradient(circle at 50% 50%,#0d47a1,transparent 70%);
+        filter:blur(90px);
+        animation:move 12s infinite alternate ease-in-out;
+    }
+    @keyframes move {0%{transform:scale(1);}100%{transform:scale(1.25);} }
+
+    .sidebar {
+        width:260px;height:100vh;
+        background:rgba(0,0,0,0.55);
+        backdrop-filter:blur(10px);
+        position:fixed;left:0;top:0;
+        padding:25px 20px;
+        border-right:1px solid rgba(255,255,255,0.1);
+    }
+    .sidebar h2 {
+        font-weight:800;font-size:1.9rem;
+        background:linear-gradient(90deg,#0D6EFD,#8a2be2);
+        -webkit-background-clip:text;color:transparent;
+        text-align:center;margin-bottom:40px;
+    }
+    .sidebar a {
+        display:block;padding:12px 15px;margin-bottom:12px;
+        border-radius:10px;color:white;text-decoration:none;
+        font-size:1.05rem;transition:0.3s;
+    }
+    .sidebar a:hover,
+    .sidebar a.active {
+        background:linear-gradient(135deg,#0D6EFD,#8a2be2);
+        box-shadow:0 0 15px rgba(13,110,253,0.6);
+    }
+
+    .main {
+        margin-left:280px;
+        padding:40px;
+    }
+
+    .report-card {
+        background:rgba(255,255,255,0.06);
+        border-radius:18px;
+        padding:20px;
+        border:1px solid rgba(255,255,255,0.1);
+        margin-bottom:20px;
+    }
+
+    .btn-view {
+        background:#0D6EFD;
+        border:none;
+        padding:6px 14px;
+        border-radius:8px;
+        color:white;
+    }
+    .btn-action {
+        padding:6px 14px;
+        border-radius:8px;
+        border:none;
+        color:white;
+        margin-right:6px;
+    }
+    .btn-review { background:#ffc107; }
+    .btn-resolve { background:#198754; }
+    .btn-ban { background:#dc3545; }
+</style>
+</head>
+<body>
+
+<div class="bg-waves"></div>
+
+<div class="sidebar">
+    <h2>squid pro Hub</h2>
+    <a href="OrganizerDashboard.php">📊 Organizer Dashboard</a>
+    <a href="OrganizerEvents.php">✅ Manage Events</a>
+    <a href="OrganizerTournaments.php">🧾 Manage Tournaments</a>
+    <a href="OrganizerMatches.php">⚔️ Manage Matches</a>
+    <a href="OrganizerMatchResults.php">🧮 Match Results</a>
+    <a href="OrganizerReports.php" class="active">📑 Review Reports</a>
+    <a href="Rewards.php">🎁 Rewards</a>
+    <a href="Logout.php">🚪 Logout</a>
+</div>
+
+<div class="main">
+    <h1 class="fw-bold">Review Reports</h1>
+    <p style="opacity:0.8;">Review player-submitted reports and take appropriate action.</p>
+
+    <?php if ($success): ?>
+        <div class="alert alert-success"><?php echo esc($success); ?></div>
+    <?php endif; ?>
+
+    <?php if ($errors): foreach ($errors as $e): ?>
+        <div class="alert alert-danger"><?php echo esc($e); ?></div>
+    <?php endforeach; endif; ?>
+
+    <?php if (empty($reports)): ?>
+        <div class="report-card"><p>No reports found.</p></div>
+    <?php else: ?>
+        <?php foreach ($reports as $rp): ?>
+            <div class="report-card">
+                <h4>Report #<?php echo esc($rp['id']); ?></h4>
+                <p><strong>Issue:</strong> <?php echo esc($rp['issue_type']); ?></p>
+                <p><strong>Description:</strong> <?php echo esc($rp['description']); ?></p>
+                <p><strong>Reported by:</strong> <?php echo esc($rp['reporter'] ?: "Unknown"); ?></p>
+                <p><strong>Reported user:</strong> <?php echo esc($rp['reported_user'] ?: "Unknown"); ?></p>
+                <p><strong>Status:</strong> <?php echo esc($rp['status']); ?></p>
+                <?php if (!empty($rp['response_text'])): ?>
+                    <p><strong>Reply:</strong> <?php echo esc($rp['response_text']); ?></p>
+                    <p style="opacity:0.8;"><strong>Replied at:</strong> <?php echo esc($rp['responded_at']); ?></p>
+                <?php endif; ?>
+
+                <form method="POST" style="display:inline;">
+                    <input type="hidden" name="csrf_token" value="<?php echo esc($_SESSION['csrf_token']); ?>">
+                    <input type="hidden" name="report_id" value="<?php echo (int)$rp['id']; ?>">
+                    <input type="hidden" name="action" value="review">
+                    <button class="btn-action btn-review">Mark In Review</button>
+                </form>
+
+                <form method="POST" style="display:inline;">
+                    <input type="hidden" name="csrf_token" value="<?php echo esc($_SESSION['csrf_token']); ?>">
+                    <input type="hidden" name="report_id" value="<?php echo (int)$rp['id']; ?>">
+                    <input type="hidden" name="action" value="resolve">
+                    <button class="btn-action btn-resolve">Resolve</button>
+                </form>
+
+                <form method="POST" style="display:inline;">
+                    <input type="hidden" name="csrf_token" value="<?php echo esc($_SESSION['csrf_token']); ?>">
+                    <input type="hidden" name="report_id" value="<?php echo (int)$rp['id']; ?>">
+                    <input type="hidden" name="action" value="ban">
+                    <button class="btn-action btn-ban">Ban User</button>
+                </form>
+
+                <form method="POST" style="margin-top:12px;">
+                    <input type="hidden" name="csrf_token" value="<?php echo esc($_SESSION['csrf_token']); ?>">
+                    <input type="hidden" name="report_id" value="<?php echo (int)$rp['id']; ?>">
+                    <input type="hidden" name="action" value="reply">
+                    <label class="form-label">Reply to reporter</label>
+                    <textarea name="response_text" class="form-control mb-2" rows="2" placeholder="Write a response..."><?php echo esc($rp['response_text'] ?? ''); ?></textarea>
+                    <div class="d-flex gap-2">
+                        <select name="status" class="form-select" style="max-width:180px;">
+                            <?php
+                                $st = $rp['status'] ?? 'open';
+                                $opts = ['open' => 'Open', 'in_review' => 'In Review', 'resolved' => 'Resolved', 'banned' => 'Banned'];
+                                foreach ($opts as $val => $label) {
+                                    $sel = ($st === $val) ? 'selected' : '';
+                                    echo '<option value="' . esc($val) . '" ' . $sel . '>' . esc($label) . '</option>';
+                                }
+                            ?>
+                        </select>
+                        <button class="btn btn-sm btn-outline-light">Send Reply</button>
+                    </div>
+                </form>
+            </div>
+        <?php endforeach; ?>
+    <?php endif; ?>
+
+</div>
+
+</body>
+</html>

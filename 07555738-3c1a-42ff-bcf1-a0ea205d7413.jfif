@@ -1,0 +1,269 @@
+<?php
+
+
+session_start();
+
+/* ---------- Configuration ---------- */
+$db_host = 'localhost';
+$db_user = 'root';
+$db_pass = '';
+$db_name = 'SquidPro';
+
+/* ---------- Helpers ---------- */
+function esc($s) {
+    return htmlspecialchars($s ?? '', ENT_QUOTES, 'UTF-8');
+}
+
+/* ---------- Input: game id ---------- */
+$game_id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
+if ($game_id <= 0) {
+    http_response_code(400);
+    echo "Invalid game id.";
+    exit;
+}
+
+/* ---------- Connect to DB ---------- */
+$mysqli = new mysqli($db_host, $db_user, $db_pass, $db_name);
+if ($mysqli->connect_errno) {
+    http_response_code(500);
+    echo "Database connection failed.";
+    exit;
+}
+$mysqli->set_charset('utf8mb4');
+
+/* ---------- Load game details ---------- */
+$game = null;
+$stmt = $mysqli->prepare("SELECT id, name, icon, description FROM games WHERE id = ? LIMIT 1");
+
+if ($stmt) {
+    $stmt->bind_param('i', $game_id);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $game = $res->fetch_assoc();
+    $stmt->close();
+}
+if (!$game) {
+    http_response_code(404);
+    echo "Game not found.";
+    $mysqli->close();
+    exit;
+}
+
+/* ---------- Load upcoming tournaments for this game ---------- */
+$tournaments = [];
+$stmt = $mysqli->prepare("SELECT id, name, start_date, status, organizer_id FROM tournaments WHERE game_id = ? ORDER BY start_date ASC LIMIT 20");
+if ($stmt) {
+    $stmt->bind_param('i', $game_id);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    while ($row = $res->fetch_assoc()) {
+        $tournaments[] = $row;
+    }
+    $stmt->close();
+}
+
+/* ---------- Load related games (same category or other active games) ---------- */
+$related = [];
+$stmt = $mysqli->prepare("SELECT id, name, icon FROM games WHERE id <> ? AND is_active = 1 ORDER BY name ASC LIMIT 6");
+if ($stmt) {
+    $stmt->bind_param('i', $game_id);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    while ($r = $res->fetch_assoc()) {
+        $related[] = $r;
+    }
+    $stmt->close();
+}
+
+/* ---------- Close DB ---------- */
+$mysqli->close();
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Squid Pro | Game Details - <?php echo esc($game['name']); ?></title>
+
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;800&display=swap" rel="stylesheet">
+
+<style>
+  :root { --accent1:#0D6EFD; --accent2:#8a2be2; }
+  body { margin:0; font-family:'Poppins',sans-serif; background:#0d1117; color:#fff; }
+  .animated-bg { position:fixed; inset:0; z-index:-1; background: radial-gradient(circle at 20% 20%, #1a237e, transparent 60%), radial-gradient(circle at 80% 80%, #8e24aa, transparent 60%), radial-gradient(circle at 50% 50%, #0d47a1, transparent 70%); filter: blur(80px); }
+  .logo-icon { width:55px;height:55px;background:linear-gradient(135deg,var(--accent1),var(--accent2));border-radius:14px;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:24px;color:#fff;box-shadow:0 0 25px rgba(13,110,253,0.9); }
+  .navbar { background-color: rgba(0,0,0,0.55) !important; backdrop-filter: blur(6px); }
+  .game-header { margin-top:120px; text-align:center; padding:24px 12px; }
+  .game-icon-big img { width:220px; height:220px; object-fit:cover; border-radius:14px; box-shadow:0 8px 30px rgba(13,110,253,0.25); }
+  .game-title { font-size:2.6rem; font-weight:800; margin-top:14px; }
+  .details-card { background: rgba(255,255,255,0.04); border-radius:14px; padding:24px; border:1px solid rgba(255,255,255,0.06); margin-top:28px; }
+  .btn-main { background: linear-gradient(135deg,var(--accent1),var(--accent2)); border:none; padding:10px 22px; border-radius:999px; color:#fff; }
+  .section-title { font-weight:700; margin-bottom:12px; }
+  .tournament-item { background: rgba(255,255,255,0.03); padding:12px; border-radius:10px; border:1px solid rgba(255,255,255,0.04); }
+  .related-card { background: rgba(255,255,255,0.03); padding:12px; border-radius:10px; text-align:center; border:1px solid rgba(255,255,255,0.04); }
+  .muted { color:rgba(255,255,255,0.75); }
+  .tag { display:inline-block; padding:6px 10px; border-radius:999px; background:rgba(255,255,255,0.03); margin-right:8px; font-size:0.9rem; }
+  @media (max-width:767px) { .game-icon-big img { width:140px; height:140px; } .game-title { font-size:1.6rem; } }
+</style>
+</head>
+<body>
+  <div class="animated-bg"></div>
+
+  <!-- Navbar -->
+  <nav class="navbar navbar-expand-lg navbar-dark fixed-top shadow-sm">
+    <div class="container">
+      <div class="d-flex align-items-center">
+        <div class="logo-icon me-3">S</div>
+        <a class="navbar-brand fw-bold fs-4" href="index.php" style="color:#fff;text-decoration:none;">squid pro</a>
+      </div>
+
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navMenu">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+
+      <div class="collapse navbar-collapse" id="navMenu">
+        <ul class="navbar-nav ms-auto me-0">
+          <li class="nav-item"><a class="nav-link" href="index.php">Home</a></li>
+          <li class="nav-item"><a class="nav-link" href="Games.php">Games</a></li>
+          <li class="nav-item"><a class="nav-link" href="Teams.php">Teams</a></li>
+          <li class="nav-item"><a class="nav-link" href="Tournaments.php">Tournaments</a></li>
+          <li class="nav-item"><a class="nav-link" href="AI-Coach.php">AI Coach</a></li>
+        </ul>
+
+        <div class="d-flex ms-3">
+          <?php if (!empty($_SESSION['user_id'])): ?>
+            <a href="Profile.php" class="btn btn-outline-light me-2">Profile</a>
+            <a href="Logout.php" class="btn btn-outline-light">Logout</a>
+          <?php else: ?>
+            <a href="login.php" class="btn btn-primary">Login</a>
+          <?php endif; ?>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Game header -->
+  <div class="container game-header">
+    <div class="game-icon-big">
+      <?php
+        $icon = trim($game['icon'] ?? '');
+      if ($icon !== '' && preg_match('/\.(png|jpg|jpeg|webp|gif)$/i', $icon)) {
+    echo '<img src="image/' . esc($icon) . '" alt="' . esc($game['name']) . '">';
+} else {
+    echo '<img src="image/default-game.png" alt="' . esc($game['name']) . '">';
+}
+
+      ?>
+    </div>
+
+    <h1 class="game-title"><?php echo esc($game['name']); ?></h1>
+    <p class="muted"><?php echo esc(substr($game['description'], 0, 220)); ?><?php echo strlen($game['description'])>220 ? '...' : ''; ?></p>
+
+    <div style="margin-top:14px;">
+      <a href="Tournaments.php?game=<?php echo urlencode($game['name']); ?>" class="btn btn-main me-2">View Tournaments</a>
+      <a href="Teams.php?game=<?php echo urlencode($game['name']); ?>" class="btn btn-outline-light">View Teams</a>
+    </div>
+  </div>
+
+  <!-- Main content -->
+  <div class="container">
+    <div class="row g-4 mt-4">
+      <div class="col-lg-8">
+        <div class="details-card">
+          <h3 class="section-title">About</h3>
+          <p><?php echo nl2br(esc($game['description'])); ?></p>
+
+          <?php
+            // Optional metadata display if JSON stored in metadata column
+            $meta = [];
+            if (!empty($game['metadata'])) {
+                $decoded = json_decode($game['metadata'], true);
+                if (is_array($decoded)) $meta = $decoded;
+            }
+          ?>
+          <?php if (!empty($meta)): ?>
+            <div class="mt-3">
+              <?php foreach ($meta as $k => $v): ?>
+                <span class="tag"><?php echo esc($k); ?>: <?php echo esc($v); ?></span>
+              <?php endforeach; ?>
+            </div>
+          <?php endif; ?>
+
+          <hr style="border-color: rgba(255,255,255,0.04);">
+
+          <h3 class="section-title">Upcoming Tournaments</h3>
+          <?php if (empty($tournaments)): ?>
+            <div class="muted">No tournaments found for this game.</div>
+          <?php else: ?>
+            <div class="list-group">
+              <?php foreach ($tournaments as $t): ?>
+                <div class="list-group-item tournament-item d-flex justify-content-between align-items-center">
+                  <div>
+                    <div style="font-weight:700;"><?php echo esc($t['name']); ?></div>
+                    <div class="muted" style="font-size:0.9rem;"><?php echo esc(date('M j, Y', strtotime($t['start_date'] ?? 'now'))); ?> — <?php echo esc(ucfirst($t['status'])); ?></div>
+                  </div>
+                  <div class="d-flex gap-2">
+                    <a href="TournamentView.php?id=<?php echo (int)$t['id']; ?>" class="btn btn-sm btn-outline-light">View</a>
+                    <a href="RegisterTournament.php?id=<?php echo (int)$t['id']; ?>" class="btn btn-sm btn-main">Register</a>
+                  </div>
+                </div>
+              <?php endforeach; ?>
+            </div>
+          <?php endif; ?>
+
+        </div>
+      </div>
+
+      <div class="col-lg-4">
+        <div class="details-card">
+          <h5 class="section-title">Quick Stats</h5>
+          <p class="muted">Basic information and quick actions for this game.</p>
+          <ul class="list-unstyled mt-3">
+            <li><strong>Game:</strong> <?php echo esc($game['name']); ?></li>
+            <li><strong>Tournaments:</strong> <?php echo count($tournaments); ?></li>
+            <li><strong>Related games:</strong> <?php echo count($related); ?></li>
+          </ul>
+
+          <div class="mt-3">
+            <a href="Tournaments.php?game=<?php echo urlencode($game['name']); ?>" class="btn btn-main w-100 mb-2">Browse Tournaments</a>
+            <a href="Teams.php?game=<?php echo urlencode($game['name']); ?>" class="btn btn-outline-light w-100">Find Teams</a>
+          </div>
+        </div>
+
+        <div class="mt-4">
+          <h5 class="section-title">Related Games</h5>
+          <div class="row g-2">
+            <?php if (empty($related)): ?>
+              <div class="col-12 related-card">No related games found.</div>
+            <?php else: foreach ($related as $r): ?>
+              <div class="col-6">
+                <a href="GameView.php?id=<?php echo (int)$r['id']; ?>" style="text-decoration:none;color:inherit;">
+                  <div class="related-card">
+                    <?php
+                      $ricon = trim($r['icon'] ?? '');
+                      if ($ricon !== '' && (strpos($ricon, '/') !== false || preg_match('/\.(png|jpg|jpeg|webp|gif)$/i', $ricon))) {
+                          echo '<img src="' . esc($ricon) . '" alt="' . esc($r['name']) . '" style="width:100%;height:90px;object-fit:cover;border-radius:8px;margin-bottom:8px;">';
+                      } elseif ($ricon !== '') {
+                          echo '<div class="related-icon">' . esc($ricon) . '</div>';
+                      } else {
+                          echo '<div class="related-icon">🎮</div>';
+                      }
+                    ?>
+                    <div style="font-weight:700;"><?php echo esc($r['name']); ?></div>
+                  </div>
+                </a>
+              </div>
+            <?php endforeach; endif; ?>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+<!-- Bootstrap JS -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+</body>
+</html>

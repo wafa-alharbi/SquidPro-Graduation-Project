@@ -1,0 +1,75 @@
+﻿<?php
+session_start();
+
+/* ---------- CONFIG ---------- */
+$db_host = 'localhost';
+$db_user = 'root';
+$db_pass = '';
+$db_name = 'SquidPro';
+
+header('Content-Type: application/json; charset=utf-8');
+
+if (empty($_SESSION['user_id'])) {
+    echo json_encode(['success' => false, 'error' => 'not_authenticated']);
+    exit;
+}
+$user_id = (int)$_SESSION['user_id'];
+
+$game_id = (int)($_POST['game_id'] ?? 0);
+$mode = trim($_POST['mode'] ?? 'training');
+$score_for = (int)($_POST['score_for'] ?? 0);
+$score_against = (int)($_POST['score_against'] ?? 0);
+
+if ($game_id <= 0) {
+    echo json_encode(['success' => false, 'error' => 'invalid_game']);
+    exit;
+}
+
+$mysqli = new mysqli($db_host, $db_user, $db_pass, $db_name);
+if ($mysqli->connect_errno) {
+    echo json_encode(['success' => false, 'error' => 'db']);
+    exit;
+}
+$mysqli->set_charset('utf8mb4');
+
+$mysqli->query("
+CREATE TABLE IF NOT EXISTS training_progress (
+  id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  game_id INT NOT NULL,
+  mode VARCHAR(20) NOT NULL,
+  sessions INT DEFAULT 0,
+  best_score_for INT DEFAULT 0,
+  best_score_against INT DEFAULT 0,
+  last_played DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_user_game_mode (user_id, game_id, mode)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+");
+
+$stmt = $mysqli->prepare("SELECT sessions, best_score_for, best_score_against FROM training_progress WHERE user_id=? AND game_id=? AND mode=? LIMIT 1");
+$stmt->bind_param('iis', $user_id, $game_id, $mode);
+$stmt->execute();
+$stmt->bind_result($sessions, $best_for, $best_against);
+$exists = $stmt->fetch();
+$stmt->close();
+
+if ($exists) {
+    $sessions = (int)$sessions + 1;
+    $best_for = max((int)$best_for, $score_for);
+    $best_against = max((int)$best_against, $score_against);
+    $stmt = $mysqli->prepare("UPDATE training_progress SET sessions=?, best_score_for=?, best_score_against=?, last_played=NOW() WHERE user_id=? AND game_id=? AND mode=?");
+    $stmt->bind_param('iiiiis', $sessions, $best_for, $best_against, $user_id, $game_id, $mode);
+    $stmt->execute();
+    $stmt->close();
+} else {
+    $stmt = $mysqli->prepare("INSERT INTO training_progress (user_id, game_id, mode, sessions, best_score_for, best_score_against, last_played)
+                              VALUES (?, ?, ?, 1, ?, ?, NOW())");
+    $stmt->bind_param('iisii', $user_id, $game_id, $mode, $score_for, $score_against);
+    $stmt->execute();
+    $stmt->close();
+}
+
+$mysqli->close();
+
+echo json_encode(['success' => true]);
+?>
